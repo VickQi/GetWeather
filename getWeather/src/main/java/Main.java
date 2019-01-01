@@ -7,6 +7,9 @@ import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.JedisPoolConfig;
 
 import java.io.IOException;
 import java.text.ParseException;
@@ -16,7 +19,20 @@ import java.util.Date;
 import java.util.List;
 
 public class Main {
-    private static Logger logger = LogManager.getLogger(Main.class);
+    private final static Logger logger = LogManager.getLogger(Main.class);
+    private static JedisPool jedisPool =  null;
+    static{
+        try{
+            JedisPoolConfig config = new JedisPoolConfig();
+            config.setMaxTotal(1024);
+            config.setMaxIdle(200);
+            config.setMaxWaitMillis(10000);//10s
+            config.setTestOnBorrow(true);
+            jedisPool = new JedisPool(config,"127.0.0.1",6379,10000);
+        }catch (Exception e){
+            logger.error("初始化Jedis失败",e);
+        }
+    }
     public static void main(String[] agrs){
         Long tid = System.nanoTime();
         logger.info("{}: 开始获取天气信息",tid);
@@ -27,16 +43,26 @@ public class Main {
         String fore_url = base_url+"all";//预报天气
 
         //获取实时天气
-        Weather cur_weather = getWeather(cur_url,tid);
+        Weather weather = getWeather(cur_url,tid);
         Weather fore_weather = getWeather(fore_url,tid);
-        Weather weather = cur_weather;
         weather.setForecasts(fore_weather.getForecasts());
         Live live = weather.getLives().get(0);
-        String weatherReport = "现在天气：" + live.getWeather() + ", " +
-                "温度：" + live.getTemperature() + "摄氏度, "+
-                "湿度：" + live.getHumidity()+"%,"+
-                live.getWinddirection()+"风"+","+
-                "风力"+live.getWindpower()+"级, ";
+        StringBuilder weatherReport = new StringBuilder();
+        weatherReport.append("现在天气：");
+        weatherReport.append(live.getWeather());
+        weatherReport.append(", ");
+        weatherReport.append("温度：");
+        weatherReport.append(live.getTemperature());
+        weatherReport.append("摄氏度, ");
+        weatherReport.append("湿度：" );
+        weatherReport.append(live.getHumidity());
+        weatherReport.append("%,");
+        weatherReport.append(live.getWinddirection());
+        weatherReport.append("风");
+        weatherReport.append(",");
+        weatherReport.append("风力");
+        weatherReport.append(live.getWindpower());
+        weatherReport.append("级, ");
         SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd");
         try{
             Date today = format.parse(live.getReporttime());
@@ -54,27 +80,61 @@ public class Main {
                         Integer tempDay = Integer.valueOf(cast.getDaytemp());
                         Integer tempNight = Integer.valueOf(cast.getNighttemp());
                         if(tempDay>tempNight){
-                            weatherReport+="今日最高气温："+tempDay+"摄氏度, 最低气温："+tempNight+"摄氏度，";
+                            weatherReport.append("今日最高气温：");
+                            weatherReport.append(tempDay);
+                            weatherReport.append("摄氏度, 最低气温：");
+                            weatherReport.append(tempNight);
+                            weatherReport.append("摄氏度，");
                         }else{
-                            weatherReport+="今日最高气温："+tempNight+"摄氏度, 最低气温："+tempDay+"摄氏度，";
+                            weatherReport.append("今日最高气温：");
+                            weatherReport.append(tempNight);
+                            weatherReport.append("摄氏度, 最低气温：");
+                            weatherReport.append(tempDay);
+                            weatherReport.append("摄氏度，");
                         }
                     }else if(date.equals(tomarrow)){
-                        weatherReport+="明日白天："+cast.getDayweather()+", 明日夜间："+cast.getNightweather()+", ";
+                        weatherReport.append("明日白天：");
+                        weatherReport.append(cast.getDayweather());
+                        weatherReport.append(", 明日夜间：");
+                        weatherReport.append(cast.getNightweather());
+                        weatherReport.append(", ");
                         Integer tempDay = Integer.valueOf(cast.getDaytemp());
                         Integer tempNight = Integer.valueOf(cast.getNighttemp());
                         if(tempDay>tempNight){
-                            weatherReport += "明日最高气温："+tempDay+"摄氏度, 最低气温："+tempNight+"摄氏度，";
+                            weatherReport.append("明日最高气温：");
+                            weatherReport.append(tempDay);
+                            weatherReport.append("摄氏度, 最低气温：");
+                            weatherReport.append(tempNight);
+                            weatherReport.append("摄氏度，");
                         }else{
-                            weatherReport += "明日最高气温："+tempNight+"摄氏度, 最低气温："+tempDay+"摄氏度。";
+                            weatherReport.append("明日最高气温：");
+                            weatherReport.append(tempNight);
+                            weatherReport.append("摄氏度, 最低气温：");
+                            weatherReport.append(tempDay);
+                            weatherReport.append("摄氏度。");
                         }
                     }
                 }
             }
-            weatherReport += "（更新时间：" + live.getReporttime()+ "）";
+            weatherReport.append("（更新时间：");
+            weatherReport.append(live.getReporttime());
+            weatherReport.append("）");
+            Jedis jedis = getJedis();
+            if(jedis != null){
+                jedis.set("weather",weatherReport.toString());
+                logger.info("{} : 缓存设置成功！weather={}",tid,weatherReport.toString());
+            }else{
+                logger.error("{}: 设置缓存失败！",tid);
+                //TODO 设置数据库
+            }
+            if(jedisPool!=null){
+                jedisPool.close();
+            }
+
         }catch (ParseException e){
             logger.error(tid+": 日期["+live.getReporttime()+"] 解析失败，不符合yyyy-MM-dd格式！");
         }
-        logger.info("{}:weatherReport={}",tid,weatherReport);
+        logger.info("{}: weatherReport = {}",tid,weatherReport.toString());
     }
 
     private static Weather getWeather(String cur_url,Long tid) {
@@ -125,6 +185,19 @@ public class Main {
             logger.error(tid+": 关闭httpClient异常！");
         }
         return weather;
+    }
+
+    private synchronized static Jedis getJedis(){
+        try{
+            if(jedisPool!=null){
+                return jedisPool.getResource();
+            }else{
+                return null;
+            }
+        }catch (Exception e){
+            logger.error("获取jedis异常",e);
+            return null;
+        }
     }
 }
 
