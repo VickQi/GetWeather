@@ -1,3 +1,5 @@
+package getWeather.tech.qihaizhi;
+
 import java.io.Serializable;
 import java.util.List;
 
